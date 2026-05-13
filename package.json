@@ -1,0 +1,26 @@
+{
+  "name": "bot-minecraft",
+  "version": "1.0.0",
+  "description": "A simple Minecraft bot using Node.js and mineflayer",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
+  },
+  "keywords": [
+    "minecraft",
+    "bot",
+    "mineflayer"
+  ],
+  "author": "trind2013e5-png",
+  "license": "MIT",
+  "dependencies": {
+    "mineflayer": "^4.14.1",
+    "mineflayer-pathfinder": "^2.4.4",
+    "mineflayer-movements": "^2.10.4",
+    "dotenv": "^16.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.20"
+  }
+}

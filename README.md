@@ -230,7 +230,7 @@ Contributions welcome:
 
 ## Changelog
 
-### v2.0.0
+### v1.0.1
 - ✨ Added Bedrock Edition support
 - ✨ Added Xbox Live authentication
 - ✨ Added Minecraft Realms support

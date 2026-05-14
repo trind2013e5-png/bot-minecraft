@@ -1,16 +1,20 @@
 {
   "name": "bot-minecraft",
-  "version": "1.0.0",
-  "description": "A simple Minecraft bot using Node.js and mineflayer",
+  "version": "2.0.0",
+  "description": "A versatile Minecraft bot using Node.js supporting both Java and Bedrock Editions",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
+    "start:java": "cross-env SERVER_TYPE=java node bot.js",
+    "start:bedrock": "cross-env SERVER_TYPE=bedrock node bot.js",
     "dev": "nodemon bot.js"
   },
   "keywords": [
     "minecraft",
     "bot",
-    "mineflayer"
+    "mineflayer",
+    "bedrock",
+    "java-edition"
   ],
   "author": "trind2013e5-png",
   "license": "MIT",
@@ -18,7 +22,10 @@
     "mineflayer": "^4.14.1",
     "mineflayer-pathfinder": "^2.4.4",
     "mineflayer-movements": "^2.10.4",
-    "dotenv": "^16.0.3"
+    "minecraft-bedrock-js": "^0.7.0",
+    "dotenv": "^16.0.3",
+    "cross-env": "^7.0.3",
+    "vec3": "^0.1.7"
   },
   "devDependencies": {
     "nodemon": "^2.0.20"

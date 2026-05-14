@@ -6,14 +6,12 @@ module.exports = {
     type: process.env.SERVER_TYPE || 'java', // 'java' or 'bedrock'
     host: process.env.SERVER_HOST || 'localhost',
     port: process.env.SERVER_PORT || 25565,
-    version: process.env.MC_VERSION || '1.20.1', // For Java Edition
+    version: process.env.MC_VERSION || '1.20.1',
     auth: process.env.AUTH_TYPE || 'offline', // 'offline' or 'microsoft'
   },
 
   // Bedrock-specific Configuration
   bedrock: {
-    xboxUsername: process.env.XBOX_USERNAME || '',
-    botPassword: process.env.BOT_PASSWORD || '',
     useRealm: process.env.USE_REALM === 'true' || false,
     realmId: process.env.REALM_ID || '',
   },
@@ -27,17 +25,21 @@ module.exports = {
     autoChat: false,
   },
 
-  // Movement Configuration (Java Edition only)
+  // Movement Configuration
   movement: {
-    speed: 0.1,
+    // Java Edition (mineflayer-pathfinder)
     canDig: true,
     canPlaceOn: true,
-    maxMoveAwayDistance: 128,
+
+    // Bedrock Edition (packet-based movement)
+    stepSize: 0.4,       // block mỗi tick (tốc độ di chuyển)
+    tickInterval: 50,    // ms mỗi tick (50 = 20 ticks/giây)
+    reachDistance: 1.0,  // coi là đến nơi khi còn cách bao nhiêu block
   },
 
   // Logging Configuration
   logging: {
     enabled: true,
-    level: 'info', // 'debug', 'info', 'warn', 'error'
+    level: process.env.LOG_LEVEL || 'info', // 'debug', 'info', 'warn', 'error'
   },
 };

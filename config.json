@@ -1,0 +1,27 @@
+{
+  "host": "localhost",
+  "port": 25565,
+  "edition": "java",
+
+  "username": "MyBot",
+
+  "auth": "msa-free",
+  "_auth_options": {
+    "offline":   "Không cần tài khoản. Server phải offline/cracked.",
+    "msa-free":  "✅ Đăng nhập Microsoft THẬT, KHÔNG cần mua Minecraft. Server phải offline/cracked mode.",
+    "microsoft": "Đăng nhập Microsoft, CẦN có Minecraft Java. Server online mode."
+  },
+
+  "version": false,
+  "prefix": "!",
+  "admins": ["Player1", "Player2"],
+
+  "autoReconnect": true,
+  "reconnectDelay": 5,
+  "autoRespawn": true,
+  "antiAfk": true,
+  "antiAfkInterval": 60000,
+  "canDig": false,
+
+  "webPort": 3000
+}

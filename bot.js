@@ -1,11 +1,11 @@
-cconst mineflayer = require('mineflayer');
+const mineflayer = require('mineflayer');
 const config = require('./config');
 
 let bot;
 
 // ============= BOT INITIALIZATION =============
 
-async function initializeBot() {
+function initializeBot() {
   try {
     if (config.server.type === 'java') {
       initializeJavaBot();
@@ -36,7 +36,12 @@ function initializeJavaBot() {
     auth: process.env.AUTH_TYPE || config.server.auth,
   });
 
-  bot.loadPlugin(pathfinder);
+  // Load pathfinder plugin
+  try {
+    bot.loadPlugin(pathfinder);
+  } catch (e) {
+    console.warn('⚠️ Pathfinder plugin failed to load:', e.message);
+  }
 
   bot.on('login', () => {
     console.log(`✅ Java Bot logged in as ${bot.username}`);
@@ -44,18 +49,26 @@ function initializeJavaBot() {
     console.log(`📦 Edition: Java ${config.server.version}`);
 
     if (config.bot.autoEat) {
-      bot.autoEat.enable();
-      console.log('🍗 Auto-eating enabled');
+      try {
+        bot.autoEat.enable();
+        console.log('🍗 Auto-eating enabled');
+      } catch (e) {
+        console.warn('⚠️ Auto-eat not available:', e.message);
+      }
     }
   });
 
   bot.on('spawn', () => {
     console.log('🌍 Bot spawned in world');
 
-    const movements = new Movements(bot);
-    movements.canDig = config.movement.canDig;
-    movements.canPlaceOn = config.movement.canPlaceOn;
-    bot.pathfinder.setMovements(movements);
+    try {
+      const movements = new Movements(bot);
+      movements.canDig = config.movement.canDig;
+      movements.canPlaceOn = config.movement.canPlaceOn;
+      bot.pathfinder.setMovements(movements);
+    } catch (e) {
+      console.warn('⚠️ Movement setup failed:', e.message);
+    }
   });
 
   bot.on('chat', (username, message) => {
@@ -80,10 +93,10 @@ function initializeJavaBot() {
   });
 }
 
-// ============= BEDROCK EDITION BOT (OFFLINE/CRACKED) =============
+// ============= BEDROCK EDITION BOT =============
 
 function initializeBedrockBot() {
-  console.log('🎮 Initializing Bedrock Edition bot (offline mode)...');
+  console.log('🎮 Initializing Bedrock Edition bot...');
 
   let bedrock;
   try {
@@ -97,11 +110,11 @@ function initializeBedrockBot() {
     host: process.env.SERVER_HOST || config.server.host,
     port: parseInt(process.env.SERVER_PORT || config.server.port) || 19132,
     username: process.env.BOT_USERNAME || config.bot.username,
-    offline: true, // Kết nối server cracked/offline (không cần tài khoản Microsoft)
+    offline: true,
     version: process.env.MC_VERSION || config.server.version || '1.21.0',
   });
 
-  // Bot object tương thích với phần còn lại của code
+  // Compatible bot object
   bot = {
     username: process.env.BOT_USERNAME || config.bot.username,
     edition: 'bedrock',
@@ -128,10 +141,9 @@ function initializeBedrockBot() {
       }
     },
 
-    // Di chuyển Bedrock bằng cách gửi packet move_player liên tục từng bước nhỏ
     moveTo: (targetX, targetY, targetZ) => {
       if (bot._moving) {
-        bot._moving = false; // dừng movement cũ trước
+        bot._moving = false;
         setTimeout(() => bot.moveTo(targetX, targetY, targetZ), 100);
         return;
       }
@@ -140,9 +152,9 @@ function initializeBedrockBot() {
       bot.chat(`Moving to: ${targetX}, ${targetY}, ${targetZ}`);
       console.log(`🚶 Bedrock moving to: ${targetX}, ${targetY}, ${targetZ}`);
 
-      const STEP     = config.movement.stepSize     ?? 0.4;
-      const INTERVAL = config.movement.tickInterval  ?? 50;
-      const REACH    = config.movement.reachDistance ?? 1.0;
+      const STEP = config.movement.stepSize ?? 0.4;
+      const INTERVAL = config.movement.tickInterval ?? 50;
+      const REACH = config.movement.reachDistance ?? 1.0;
 
       const moveInterval = setInterval(() => {
         if (!bot._moving) {
@@ -165,11 +177,9 @@ function initializeBedrockBot() {
           return;
         }
 
-        // Tính hướng đi, chuẩn hoá
         const len = Math.max(dist, 0.01);
         const newX = pos.x + (dx / len) * Math.min(STEP, dist);
         const newZ = pos.z + (dz / len) * Math.min(STEP, dist);
-        // Điều chỉnh Y từng bước nhỏ nếu có độ chênh lệch
         const newY = pos.y + Math.sign(dy) * Math.min(0.3, Math.abs(dy));
 
         const yaw = Math.atan2(-dx, dz);
@@ -177,18 +187,17 @@ function initializeBedrockBot() {
         try {
           client.queue('move_player', {
             runtime_id: bot._runtimeId ?? 1n,
-            position: { x: newX, y: newY + 1.62, z: newZ }, // +1.62 = eye height
+            position: { x: newX, y: newY + 1.62, z: newZ },
             pitch: 0,
             yaw: yaw,
             head_yaw: yaw,
-            mode: 0,     // 0 = normal
+            mode: 0,
             on_ground: true,
             ridden_runtime_id: 0n,
             cause: { type: 'unknown', entity_id: 0n },
             tick: BigInt(Date.now()),
           });
 
-          // Cập nhật vị trí local ngay để bước tiếp theo tính đúng
           bot.entity.position = { x: newX, y: newY, z: newZ };
         } catch (err) {
           console.error(`⚠️ Move packet error: ${err.message}`);
@@ -213,13 +222,13 @@ function initializeBedrockBot() {
     loadPlugin: () => {},
   };
 
-  // Lấy runtimeId của bot từ packet start_game
+  // Get runtime ID
   client.on('start_game', (packet) => {
     bot._runtimeId = packet.runtime_entity_id ?? 1n;
     console.log(`🆔 Bot runtime ID: ${bot._runtimeId}`);
   });
 
-  // Spawn vào world thành công
+  // Spawn success
   client.on('spawn', () => {
     console.log(`✅ Bedrock Bot logged in as ${bot.username}`);
     console.log(`🎮 Connected to: ${config.server.host}:${config.server.port}`);
@@ -234,7 +243,7 @@ function initializeBedrockBot() {
     }
   });
 
-  // Nhận chat từ player
+  // Receive chat
   client.on('text', (packet) => {
     const username = packet.source_name;
     const message = packet.message;
@@ -247,9 +256,8 @@ function initializeBedrockBot() {
     }
   });
 
-  // Cập nhật vị trí bot
+  // Update position
   client.on('move_player', (packet) => {
-    // runtime_id = 1 thường là client bot
     if (packet.runtime_id === 1n || packet.runtime_id === 1) {
       bot.entity.position = {
         x: packet.position.x,
@@ -259,7 +267,7 @@ function initializeBedrockBot() {
     }
   });
 
-  // Cập nhật máu và đồ ăn
+  // Update health and food
   client.on('update_attributes', (packet) => {
     for (const attr of (packet.attributes || [])) {
       if (attr.name === 'minecraft:health') bot.health = Math.round(attr.current);
@@ -267,7 +275,7 @@ function initializeBedrockBot() {
     }
   });
 
-  // Bị kick hoặc disconnect
+  // Disconnect
   client.on('disconnect', (packet) => {
     console.log(`❌ Disconnected: ${packet.message}`);
     if (config.bot.autoReconnect) {
@@ -281,7 +289,7 @@ function initializeBedrockBot() {
   });
 }
 
-// Auto chat cho Bedrock
+// Auto chat for Bedrock
 function setupBedrockAutoChat() {
   setInterval(() => {
     if (Math.random() < 0.1) {
@@ -368,17 +376,21 @@ function handleCommand(username, input, edition) {
 
 // ============= MOVEMENT =============
 
-// Java Edition: dùng pathfinder
 function moveToCoordinatesJava(x, y, z) {
-  const { goals } = require('mineflayer-pathfinder');
-  const goal = new goals.GoalBlock(Math.floor(x), Math.floor(y), Math.floor(z));
+  try {
+    const { goals } = require('mineflayer-pathfinder');
+    const goal = new goals.GoalBlock(Math.floor(x), Math.floor(y), Math.floor(z));
 
-  bot.pathfinder.setGoal(goal);
-  bot.chat(`Moving to: ${x}, ${y}, ${z}`);
+    bot.pathfinder.setGoal(goal);
+    bot.chat(`Moving to: ${x}, ${y}, ${z}`);
 
-  bot.once('goal_reached', () => {
-    bot.chat(`Reached target: ${x}, ${y}, ${z}`);
-  });
+    bot.once('goal_reached', () => {
+      bot.chat(`Reached target: ${x}, ${y}, ${z}`);
+    });
+  } catch (e) {
+    console.warn('⚠️ Pathfinder not available:', e.message);
+    bot.chat('Pathfinding unavailable');
+  }
 }
 
 // ============= ACTIONS =============
@@ -394,7 +406,7 @@ function performDance() {
 
   setTimeout(() => {
     clearInterval(danceInterval);
-    bot.chat('Dance finished!');
+    bot.chat('💃 Dance finished!');
   }, 3000);
 }
 
@@ -419,10 +431,7 @@ console.log('🚀 Minecraft Bot v2.0.0 starting...');
 console.log(`📝 Server Type: ${config.server.type.toUpperCase()}`);
 console.log(`📝 Config loaded successfully`);
 
-initializeBot().catch(err => {
-  console.error(`❌ Failed to initialize: ${err.message}`);
-  process.exit(1);
-});
+initializeBot();
 
 // Graceful shutdown
 process.on('SIGINT', () => {

@@ -1,443 +1,363 @@
-const mineflayer = require('mineflayer');
-const config = require('./config');
+/**
+ * Minecraft Bot - Java & Bedrock
+ * Auth Microsoft KHÔNG cần mua Minecraft (Nintendo Switch title bypass)
+ * Web Dashboard via Express + WebSocket
+ */
 
-let bot;
+const mineflayer          = require('mineflayer')
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
+const chalk               = require('chalk')
+const readline            = require('readline')
+const express             = require('express')
+const http                = require('http')
+const { WebSocketServer } = require('ws')
+const path                = require('path')
+const fs                  = require('fs')
+const config              = require('./config.json')
 
-// ============= BOT INITIALIZATION =============
+// ─── Web server ───────────────────────────────────────────────────────────────
+const app    = express()
+const server = http.createServer(app)
+const wss    = new WebSocketServer({ server })
 
-function initializeBot() {
+app.use(express.static(path.join(__dirname)))
+app.use(express.json())
+
+let botInstance = null
+const logHistory = []
+
+function broadcast(type, data) {
+  const msg = JSON.stringify({ type, data, ts: Date.now() })
+  logHistory.push(msg)
+  if (logHistory.length > 300) logHistory.shift()
+  wss.clients.forEach(c => { if (c.readyState === 1) c.send(msg) })
+}
+
+wss.on('connection', (ws) => {
+  logHistory.forEach(m => ws.send(m))
+  ws.on('message', (raw) => {
+    try { const { action, payload } = JSON.parse(raw); handleDashboardAction(action, payload) } catch {}
+  })
+})
+
+app.get('/api/config', (_, res) => res.json(config))
+app.post('/api/config', (req, res) => {
+  Object.assign(config, req.body)
+  fs.writeFileSync('./config.json', JSON.stringify(config, null, 2))
+  res.json({ ok: true })
+})
+
+// ─── Logger ───────────────────────────────────────────────────────────────────
+const log = {
+  info:    (msg) => { console.log(chalk.cyan('  [INFO] ') + msg);    broadcast('log', { level: 'info',    msg }) },
+  success: (msg) => { console.log(chalk.green('  [✔] ') + msg);      broadcast('log', { level: 'success', msg }) },
+  warn:    (msg) => { console.log(chalk.yellow('  [⚠] ') + msg);     broadcast('log', { level: 'warn',    msg }) },
+  error:   (msg) => { console.log(chalk.red('  [✘] ') + msg);        broadcast('log', { level: 'error',   msg }) },
+  chat:    (user, msg) => { console.log(chalk.magenta(`  [CHAT] ${user}: `) + msg); broadcast('chat', { user, msg }) },
+  bot:     (msg) => { console.log(chalk.blue('  [BOT] ') + msg);     broadcast('log', { level: 'bot',     msg }) },
+}
+
+// ─── Banner ───────────────────────────────────────────────────────────────────
+function printBanner() {
+  console.clear()
+  console.log(chalk.green(`
+  ╔══════════════════════════════════════════════════╗
+  ║       MINECRAFT BOT — Java & Bedrock             ║
+  ║   Dashboard → http://localhost:${String(config.webPort || 3000).padEnd(18)}║
+  ╚══════════════════════════════════════════════════╝
+  `))
+}
+
+// ─── Microsoft Auth (KHÔNG CẦN MUA MINECRAFT) ────────────────────────────────
+// Cơ chế: Dùng prismarine-auth với Titles.MinecraftNintendoSwitch
+// Nintendo Switch không yêu cầu Java license → lấy được Xbox token hợp lệ
+// Token này được mineflayer dùng để login với username Microsoft thật
+// ⚠ Server phải TẮT online-mode (cracked/offline) để bot join được
+// Nếu server BẬT online-mode → cần tài khoản có Minecraft Java thật
+async function getMSAFreeToken(username) {
+  const { Authflow, Titles } = require('prismarine-auth')
+
+  log.info('Đang mở Microsoft login... (xem console để lấy link)')
+  log.warn('Truy cập link và nhập code để đăng nhập Microsoft')
+
+  const auth = new Authflow(username || 'default', './auth-cache', {
+    authTitle: Titles.MinecraftNintendoSwitch,  // bypass Java license check
+    deviceType: 'Nintendo',
+    flow: 'sisu',
+  })
+
   try {
-    if (config.server.type === 'java') {
-      initializeJavaBot();
-    } else if (config.server.type === 'bedrock') {
-      initializeBedrockBot();
-    } else {
-      console.error('❌ Invalid SERVER_TYPE. Use "java" or "bedrock"');
-      process.exit(1);
-    }
-  } catch (error) {
-    console.error(`❌ Initialization failed: ${error.message}`);
-    process.exit(1);
+    // Lấy Minecraft token qua Nintendo title (không cần mua game)
+    const xblToken = await auth.getXboxToken()
+    log.success(`Xbox auth OK: ${xblToken.userXUID}`)
+
+    // Lấy profile Microsoft để lấy tên
+    const profile = await auth.getMinecraftJavaToken({ fetchProfile: true })
+    const name = profile?.profile?.name || username || 'MSABot'
+    log.success(`Tên Microsoft: ${name}`)
+    return { success: true, name, token: profile.token }
+  } catch (e) {
+    log.error(`MSA-Free lỗi: ${e.message}`)
+    return { success: false }
   }
 }
 
-// ============= JAVA EDITION BOT =============
+// ─── Tạo Bot ──────────────────────────────────────────────────────────────────
+async function createBot() {
+  broadcast('status', { state: 'connecting' })
 
-function initializeJavaBot() {
-  console.log('🎮 Initializing Java Edition bot...');
-
-  const { pathfinder, Movements } = require('mineflayer-pathfinder');
-
-  bot = mineflayer.createBot({
-    host: process.env.SERVER_HOST || config.server.host,
-    port: process.env.SERVER_PORT || config.server.port,
-    username: process.env.BOT_USERNAME || config.bot.username,
-    version: process.env.MC_VERSION || config.server.version,
-    auth: process.env.AUTH_TYPE || config.server.auth,
-  });
-
-  // Load pathfinder plugin
-  try {
-    bot.loadPlugin(pathfinder);
-  } catch (e) {
-    console.warn('⚠️ Pathfinder plugin failed to load:', e.message);
+  const botOptions = {
+    host:    config.host,
+    port:    Number(config.port) || 25565,
+    version: config.version || false,
   }
 
-  bot.on('login', () => {
-    console.log(`✅ Java Bot logged in as ${bot.username}`);
-    console.log(`🎮 Connected to: ${config.server.host}:${config.server.port}`);
-    console.log(`📦 Edition: Java ${config.server.version}`);
+  // ── Chọn auth mode ──────────────────────────────────────────────────────────
+  if (config.auth === 'microsoft') {
+    // Microsoft auth THẬT — cần mua Minecraft Java
+    log.info('Auth Microsoft (cần có Minecraft Java)...')
+    botOptions.username       = config.username
+    botOptions.auth           = 'microsoft'
+    botOptions.profilesFolder = './auth-cache'
 
-    if (config.bot.autoEat) {
-      try {
-        bot.autoEat.enable();
-        console.log('🍗 Auto-eating enabled');
-      } catch (e) {
-        console.warn('⚠️ Auto-eat not available:', e.message);
-      }
-    }
-  });
+  } else if (config.auth === 'msa-free') {
+    // ✅ Microsoft auth KHÔNG cần mua Minecraft (Nintendo bypass)
+    // Server phải chạy offline-mode (cracked) để join
+    log.info('Auth MSA-Free (không cần mua Minecraft, server phải offline mode)...')
+    const result = await getMSAFreeToken(config.username)
+    botOptions.username = result.success ? result.name : (config.username || 'Bot')
+    botOptions.auth     = 'offline'  // join server offline
+    broadcast('log', { level: 'warn', msg: '⚠ MSA-Free: server phải offline/cracked mode!' })
 
-  bot.on('spawn', () => {
-    console.log('🌍 Bot spawned in world');
+  } else {
+    // Offline — không cần tài khoản gì
+    log.info('Auth Offline (không cần tài khoản)...')
+    botOptions.username = config.username || 'Bot'
+    botOptions.auth     = 'offline'
+  }
 
-    try {
-      const movements = new Movements(bot);
-      movements.canDig = config.movement.canDig;
-      movements.canPlaceOn = config.movement.canPlaceOn;
-      bot.pathfinder.setMovements(movements);
-    } catch (e) {
-      console.warn('⚠️ Movement setup failed:', e.message);
-    }
-  });
+  // Bedrock
+  if (config.edition === 'bedrock') {
+    botOptions.port    = Number(config.port) || 19132
+    botOptions.bedrock = true
+    if (config.auth === 'microsoft') botOptions.auth = 'xbox'
+  }
+
+  log.info(`Đang kết nối: ${botOptions.username} → ${config.host}:${botOptions.port} [${(config.edition || 'java').toUpperCase()}]`)
+
+  const bot = mineflayer.createBot(botOptions)
+  botInstance = bot
+  bot.loadPlugin(pathfinder)
+
+  bot.once('spawn', () => {
+    log.success(`Bot "${bot.username}" đã vào server thành công!`)
+    broadcast('status', { state: 'online', username: bot.username })
+    broadcast('stats', getStats(bot))
+
+    const mv = new Movements(bot)
+    mv.canDig = config.canDig !== false
+    bot.pathfinder.setMovements(mv)
+
+    if (config.autoRespawn) setupAutoRespawn(bot)
+    if (config.antiAfk)    setupAntiAfk(bot)
+
+    setInterval(() => { if (bot?.entity) broadcast('stats', getStats(bot)) }, 3000)
+  })
 
   bot.on('chat', (username, message) => {
-    if (username === bot.username) return;
-    console.log(`💬 ${username}: ${message}`);
+    if (username === bot.username) return
+    log.chat(username, message)
+    handleCommands(bot, username, message)
+  })
 
-    if (message.startsWith(config.bot.chatPrefix)) {
-      handleCommand(username, message.slice(config.bot.chatPrefix.length), 'java');
-    }
-  });
+  bot.on('whisper', (username, message) => {
+    log.chat(`[Whisper] ${username}`, message)
+    handleCommands(bot, username, message)
+  })
 
-  bot.on('end', (reason) => {
-    console.log(`❌ Disconnected: ${reason}`);
-    if (config.bot.autoReconnect) {
-      console.log('🔄 Reconnecting in 5 seconds...');
-      setTimeout(initializeBot, 5000);
-    }
-  });
+  bot.on('death',  () => { log.warn('Bot đã chết!'); broadcast('status', { state: 'dead' }) })
+
+  bot.on('kicked', (reason) => {
+    log.error(`Bị kick: ${reason}`)
+    broadcast('status', { state: 'kicked', reason })
+  })
 
   bot.on('error', (err) => {
-    console.error(`⚠️ Error: ${err.message}`);
-  });
+    log.error(`Lỗi: ${err.message}`)
+    broadcast('status', { state: 'error', reason: err.message })
+    if (config.autoReconnect) {
+      setTimeout(createBot, (config.reconnectDelay || 5) * 1000)
+      log.warn(`Kết nối lại sau ${config.reconnectDelay || 5}s...`)
+    }
+  })
+
+  bot.on('end', (reason) => {
+    log.warn(`Ngắt kết nối: ${reason}`)
+    broadcast('status', { state: 'offline', reason })
+    botInstance = null
+    if (config.autoReconnect) {
+      setTimeout(createBot, (config.reconnectDelay || 5) * 1000)
+      log.warn(`Kết nối lại sau ${config.reconnectDelay || 5}s...`)
+    }
+  })
+
+  bot.on('playerJoined', (p) => { if (p.username !== bot.username) { log.info(`${p.username} tham gia`); broadcast('players', Object.keys(bot.players)) }})
+  bot.on('playerLeft',   (p) => { if (p.username !== bot.username) { log.info(`${p.username} rời`);      broadcast('players', Object.keys(bot.players)) }})
+  bot.on('health', () => {
+    if (bot.health < 5) log.warn(`Máu thấp! HP: ${bot.health}/20`)
+    if (bot.food  < 5)  log.warn(`Đói! Food: ${bot.food}/20`)
+    broadcast('stats', getStats(bot))
+  })
+
+  setupConsoleInput(bot)
+  return bot
 }
 
-// ============= BEDROCK EDITION BOT =============
+// ─── Dashboard WebSocket Handler ──────────────────────────────────────────────
+function handleDashboardAction(action, payload) {
+  const bot = botInstance
+  switch (action) {
+    case 'connect':
+      if (!botInstance) createBot()
+      else log.warn('Bot đang chạy rồi!')
+      break
+    case 'disconnect':
+      if (bot) { bot.quit(); log.info('Đã ngắt kết nối') }
+      break
+    case 'chat':
+      if (bot && payload?.msg) { bot.chat(payload.msg); log.bot(`Chat: ${payload.msg}`) }
+      break
+    case 'come':
+      if (bot) cmdComeToPlayer(bot, payload?.target)
+      break
+    case 'follow':
+      if (bot) cmdFollow(bot, null, payload?.target)
+      break
+    case 'stop':
+      if (bot) { bot.pathfinder.stop(); log.info('Dừng di chuyển') }
+      break
+    case 'jump':
+      if (bot) { bot.setControlState('jump', true); setTimeout(() => bot.setControlState('jump', false), 300) }
+      break
+    case 'respawn':
+      if (bot) bot.respawn()
+      break
+    case 'look_random':
+      if (bot?.entity) bot.look(Math.random() * Math.PI * 2, 0, false)
+      break
+  }
+}
 
-function initializeBedrockBot() {
-  console.log('🎮 Initializing Bedrock Edition bot...');
+// ─── Stats ────────────────────────────────────────────────────────────────────
+function getStats(bot) {
+  if (!bot?.entity) return {}
+  const pos = bot.entity.position
+  return {
+    health:   bot.health || 0,
+    food:     bot.food   || 0,
+    x:        Math.floor(pos.x),
+    y:        Math.floor(pos.y),
+    z:        Math.floor(pos.z),
+    players:  Object.keys(bot.players || {}),
+    username: bot.username,
+    ping:     bot.player?.ping || 0,
+    xp:       bot.experience?.level || 0,
+  }
+}
 
-  let bedrock;
-  try {
-    bedrock = require('bedrock-protocol');
-  } catch (e) {
-    console.error('❌ bedrock-protocol not found. Run: npm install bedrock-protocol');
-    process.exit(1);
+// ─── In-game Commands ─────────────────────────────────────────────────────────
+function handleCommands(bot, username, message) {
+  const prefix  = config.prefix || '!'
+  if (!message.startsWith(prefix)) return
+  const isAdmin = config.admins?.includes(username)
+  const args    = message.slice(prefix.length).trim().split(/\s+/)
+  const cmd     = args[0].toLowerCase()
+
+  switch (cmd) {
+    case 'help':    bot.chat(`${prefix}help | ${prefix}pos | ${prefix}players | ${prefix}hi`); break
+    case 'pos':     { const p = bot.entity.position; bot.chat(`X=${Math.floor(p.x)} Y=${Math.floor(p.y)} Z=${Math.floor(p.z)}`); break }
+    case 'players': bot.chat(`Online: ${Object.keys(bot.players).join(', ')}`); break
+    case 'hi':      bot.chat(`Chào ${username}! 👋`); break
   }
 
-  const client = bedrock.createClient({
-    host: process.env.SERVER_HOST || config.server.host,
-    port: parseInt(process.env.SERVER_PORT || config.server.port) || 19132,
-    username: process.env.BOT_USERNAME || config.bot.username,
-    offline: true,
-    version: process.env.MC_VERSION || config.server.version || '1.21.0',
-  });
+  if (!isAdmin) return
 
-  // Compatible bot object
-  bot = {
-    username: process.env.BOT_USERNAME || config.bot.username,
-    edition: 'bedrock',
-    health: 20,
-    food: 20,
-    entity: { position: { x: 0, y: 64, z: 0 } },
-    _client: client,
-    _moving: false,
-    _runtimeId: null,
-
-    chat: (message) => {
-      try {
-        client.queue('text', {
-          type: 'chat',
-          needs_translation: false,
-          source_name: bot.username,
-          xuid: '',
-          platform_chat_id: '',
-          message: String(message),
-        });
-        console.log(`🤖 Bot: ${message}`);
-      } catch (err) {
-        console.error(`⚠️ Failed to send chat: ${err.message}`);
-      }
-    },
-
-    moveTo: (targetX, targetY, targetZ) => {
-      if (bot._moving) {
-        bot._moving = false;
-        setTimeout(() => bot.moveTo(targetX, targetY, targetZ), 100);
-        return;
-      }
-
-      bot._moving = true;
-      bot.chat(`Moving to: ${targetX}, ${targetY}, ${targetZ}`);
-      console.log(`🚶 Bedrock moving to: ${targetX}, ${targetY}, ${targetZ}`);
-
-      const STEP = config.movement.stepSize ?? 0.4;
-      const INTERVAL = config.movement.tickInterval ?? 50;
-      const REACH = config.movement.reachDistance ?? 1.0;
-
-      const moveInterval = setInterval(() => {
-        if (!bot._moving) {
-          clearInterval(moveInterval);
-          return;
-        }
-
-        const pos = bot.entity.position;
-        const dx = targetX - pos.x;
-        const dy = targetY - pos.y;
-        const dz = targetZ - pos.z;
-        const dist = Math.sqrt(dx * dx + dz * dz);
-
-        if (dist <= REACH && Math.abs(dy) <= REACH) {
-          clearInterval(moveInterval);
-          bot._moving = false;
-          bot.entity.position = { x: targetX, y: targetY, z: targetZ };
-          bot.chat(`Reached: ${targetX}, ${targetY}, ${targetZ}`);
-          console.log(`✅ Bedrock reached target`);
-          return;
-        }
-
-        const len = Math.max(dist, 0.01);
-        const newX = pos.x + (dx / len) * Math.min(STEP, dist);
-        const newZ = pos.z + (dz / len) * Math.min(STEP, dist);
-        const newY = pos.y + Math.sign(dy) * Math.min(0.3, Math.abs(dy));
-
-        const yaw = Math.atan2(-dx, dz);
-
-        try {
-          client.queue('move_player', {
-            runtime_id: bot._runtimeId ?? 1n,
-            position: { x: newX, y: newY + 1.62, z: newZ },
-            pitch: 0,
-            yaw: yaw,
-            head_yaw: yaw,
-            mode: 0,
-            on_ground: true,
-            ridden_runtime_id: 0n,
-            cause: { type: 'unknown', entity_id: 0n },
-            tick: BigInt(Date.now()),
-          });
-
-          bot.entity.position = { x: newX, y: newY, z: newZ };
-        } catch (err) {
-          console.error(`⚠️ Move packet error: ${err.message}`);
-          clearInterval(moveInterval);
-          bot._moving = false;
-        }
-      }, INTERVAL);
-    },
-
-    stopMoving: () => {
-      bot._moving = false;
-      console.log('🛑 Bedrock movement stopped');
-    },
-
-    quit: () => {
-      try {
-        client.disconnect('Bot shutting down');
-      } catch (_) {}
-      console.log('Closing Bedrock connection...');
-    },
-
-    loadPlugin: () => {},
-  };
-
-  // Get runtime ID
-  client.on('start_game', (packet) => {
-    bot._runtimeId = packet.runtime_entity_id ?? 1n;
-    console.log(`🆔 Bot runtime ID: ${bot._runtimeId}`);
-  });
-
-  // Spawn success
-  client.on('spawn', () => {
-    console.log(`✅ Bedrock Bot logged in as ${bot.username}`);
-    console.log(`🎮 Connected to: ${config.server.host}:${config.server.port}`);
-    console.log(`📱 Edition: Bedrock (offline/cracked)`);
-
-    if (config.bot.autoEat) {
-      console.log('🍗 Auto-eating enabled');
-    }
-
-    if (config.bot.autoChat) {
-      setupBedrockAutoChat();
-    }
-  });
-
-  // Receive chat
-  client.on('text', (packet) => {
-    const username = packet.source_name;
-    const message = packet.message;
-
-    if (!username || username === bot.username) return;
-    console.log(`💬 ${username}: ${message}`);
-
-    if (message.startsWith(config.bot.chatPrefix)) {
-      handleCommand(username, message.slice(config.bot.chatPrefix.length), 'bedrock');
-    }
-  });
-
-  // Update position
-  client.on('move_player', (packet) => {
-    if (packet.runtime_id === 1n || packet.runtime_id === 1) {
-      bot.entity.position = {
-        x: packet.position.x,
-        y: packet.position.y,
-        z: packet.position.z,
-      };
-    }
-  });
-
-  // Update health and food
-  client.on('update_attributes', (packet) => {
-    for (const attr of (packet.attributes || [])) {
-      if (attr.name === 'minecraft:health') bot.health = Math.round(attr.current);
-      if (attr.name === 'minecraft:food') bot.food = Math.round(attr.current);
-    }
-  });
-
-  // Disconnect
-  client.on('disconnect', (packet) => {
-    console.log(`❌ Disconnected: ${packet.message}`);
-    if (config.bot.autoReconnect) {
-      console.log('🔄 Reconnecting in 5 seconds...');
-      setTimeout(initializeBot, 5000);
-    }
-  });
-
-  client.on('error', (err) => {
-    console.error(`⚠️ Bedrock error: ${err.message}`);
-  });
+  switch (cmd) {
+    case 'come':   cmdComeToPlayer(bot, username); break
+    case 'stop':   bot.pathfinder.stop(); bot.chat('Đã dừng.'); break
+    case 'say':    bot.chat(args.slice(1).join(' ')); break
+    case 'look':   cmdLookAt(bot, username); break
+    case 'follow': cmdFollow(bot, username, args[1] || username); break
+    case 'status': bot.chat(`❤ ${bot.health}/20 | 🍖 ${bot.food}/20 | Ping: ${bot.player?.ping || '?'}ms`); break
+    case 'quit':   bot.chat('Tạm biệt!'); setTimeout(() => bot.quit(), 1000); break
+    case 'drop':   cmdDrop(bot, args[1]); break
+  }
 }
 
-// Auto chat for Bedrock
-function setupBedrockAutoChat() {
+function cmdComeToPlayer(bot, username) {
+  if (!username) return
+  const player = bot.players[username]
+  if (!player?.entity) { log.warn(`Không tìm thấy: ${username}`); return }
+  const { x, y, z } = player.entity.position
+  bot.pathfinder.setGoal(new goals.GoalNear(x, y, z, 2))
+  log.info(`Di chuyển đến ${username}`)
+}
+
+function cmdFollow(bot, sender, targetName) {
+  if (!targetName) return
+  const player = bot.players[targetName]
+  if (!player?.entity) { log.warn(`Không tìm thấy: ${targetName}`); return }
+  bot.pathfinder.setGoal(new goals.GoalFollow(player.entity, 3), true)
+  log.info(`Theo dõi ${targetName}`)
+}
+
+function cmdLookAt(bot, username) {
+  const player = bot.players[username]
+  if (player?.entity) bot.lookAt(player.entity.position.offset(0, 1.6, 0))
+}
+
+async function cmdDrop(bot, itemName) {
+  if (!itemName) return
+  const item = bot.inventory.items().find(i => i.name.includes(itemName))
+  if (!item) { bot.chat(`Không có: ${itemName}`); return }
+  await bot.toss(item.type, null, item.count)
+  bot.chat(`Đã thả ${item.count}x ${item.name}`)
+}
+
+function setupAntiAfk(bot) {
   setInterval(() => {
-    if (Math.random() < 0.1) {
-      const messages = [
-        'I am a Bedrock bot!',
-        'Hello from Bedrock Edition!',
-        'Running on bedrock-protocol (offline mode)',
-      ];
-      bot.chat(messages[Math.floor(Math.random() * messages.length)]);
-    }
-  }, 30000);
+    bot.setControlState('jump', true)
+    setTimeout(() => bot.setControlState('jump', false), 200)
+    bot.look(bot.entity.yaw + (Math.random() - 0.5) * 0.4, bot.entity.pitch, false)
+    log.bot('Anti-AFK ✓')
+  }, config.antiAfkInterval || 60000)
 }
 
-// ============= COMMAND HANDLER =============
-
-function handleCommand(username, input, edition) {
-  const [command, ...args] = input.trim().split(' ');
-
-  console.log(`⚙️ Command: ${command} from ${username} (${edition})`);
-
-  switch (command.toLowerCase()) {
-    case 'help': {
-      const extraCommands = edition === 'java'
-        ? ', !goto <x> <y> <z>, !stop'
-        : ', !goto <x> <y> <z>, !stop';
-      bot.chat(`Available commands: !help, !status, !version, !dance, !hello${extraCommands}`);
-      break;
-    }
-
-    case 'status': {
-      const pos = bot.entity.position;
-      bot.chat(`Health: ${bot.health}/20, Food: ${bot.food}/20, Position: ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}`);
-      break;
-    }
-
-    case 'version': {
-      const editionName = config.server.type === 'java' ? 'Java' : 'Bedrock';
-      const versionInfo = config.server.type === 'java' ? config.server.version : 'Latest';
-      bot.chat(`Running ${editionName} Edition (${versionInfo})`);
-      break;
-    }
-
-    case 'goto': {
-      if (args.length < 3) {
-        bot.chat('Usage: !goto <x> <y> <z>');
-        break;
-      }
-      const gx = parseFloat(args[0]);
-      const gy = parseFloat(args[1]);
-      const gz = parseFloat(args[2]);
-      if (edition === 'java') {
-        moveToCoordinatesJava(gx, gy, gz);
-      } else {
-        bot.moveTo(gx, gy, gz);
-      }
-      break;
-    }
-
-    case 'stop': {
-      if (edition === 'java') {
-        if (bot.pathfinder) {
-          bot.pathfinder.stop();
-          bot.chat('Movement stopped');
-        }
-      } else {
-        bot.stopMoving();
-        bot.chat('Movement stopped');
-      }
-      break;
-    }
-
-    case 'dance':
-      performDance();
-      break;
-
-    case 'hello':
-      bot.chat(`Hello ${username}! I'm ${bot.username}`);
-      break;
-
-    default:
-      bot.chat(`Unknown command: ${command}. Type !help for available commands.`);
-  }
+function setupAutoRespawn(bot) {
+  bot.on('death', () => setTimeout(() => { bot.respawn(); log.info('Tự hồi sinh') }, 2000))
 }
 
-// ============= MOVEMENT =============
-
-function moveToCoordinatesJava(x, y, z) {
-  try {
-    const { goals } = require('mineflayer-pathfinder');
-    const goal = new goals.GoalBlock(Math.floor(x), Math.floor(y), Math.floor(z));
-
-    bot.pathfinder.setGoal(goal);
-    bot.chat(`Moving to: ${x}, ${y}, ${z}`);
-
-    bot.once('goal_reached', () => {
-      bot.chat(`Reached target: ${x}, ${y}, ${z}`);
-    });
-  } catch (e) {
-    console.warn('⚠️ Pathfinder not available:', e.message);
-    bot.chat('Pathfinding unavailable');
-  }
+function setupConsoleInput(bot) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: chalk.green('  > ') })
+  rl.prompt()
+  rl.on('line', (line) => {
+    const input = line.trim()
+    if (!input) { rl.prompt(); return }
+    if (input.startsWith('/'))       bot.chat(input)
+    else if (input === 'quit')       { bot.quit(); process.exit(0) }
+    else if (input === 'pos')        { const p = bot.entity.position; log.info(`X=${Math.floor(p.x)} Y=${Math.floor(p.y)} Z=${Math.floor(p.z)}`) }
+    else if (input === 'players')    log.info(Object.keys(bot.players).join(', '))
+    else if (input === 'status')     log.info(`❤ ${bot.health}/20 | 🍖 ${bot.food}/20`)
+    else                             bot.chat(input)
+    rl.prompt()
+  })
 }
 
-// ============= ACTIONS =============
-
-function performDance() {
-  let direction = 0;
-  const danceInterval = setInterval(() => {
-    if (bot.look) {
-      bot.look(direction * Math.PI / 2, 0);
-    }
-    direction = (direction + 1) % 4;
-  }, 200);
-
-  setTimeout(() => {
-    clearInterval(danceInterval);
-    bot.chat('💃 Dance finished!');
-  }, 3000);
-}
-
-// ============= AUTO CHAT (Java) =============
-
-if (config.server.type === 'java' && config.bot.autoChat) {
-  setInterval(() => {
-    if (bot && Math.random() < 0.1) {
-      const messages = [
-        'I am a Java bot!',
-        'Hello from Java Edition!',
-        'Running on mineflayer',
-      ];
-      bot.chat(messages[Math.floor(Math.random() * messages.length)]);
-    }
-  }, 30000);
-}
-
-// ============= STARTUP =============
-
-console.log('🚀 Minecraft Bot v2.0.0 starting...');
-console.log(`📝 Server Type: ${config.server.type.toUpperCase()}`);
-console.log(`📝 Config loaded successfully`);
-
-initializeBot();
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n🛑 Shutting down gracefully...');
-  if (bot && bot.quit) {
-    bot.quit();
-  }
-  process.exit(0);
-});
+// ─── Start ────────────────────────────────────────────────────────────────────
+printBanner()
+const PORT = config.webPort || 3000
+server.listen(PORT, () => {
+  log.success(`Dashboard: http://localhost:${PORT}`)
+  log.info('Đang khởi động bot...')
+  createBot()
+})

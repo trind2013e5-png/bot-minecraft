@@ -1,33 +1,25 @@
 {
-  "name": "bot-minecraft",
+  "name": "minecraft-bot",
   "version": "2.0.0",
-  "description": "A versatile Minecraft bot using Node.js supporting both Java and Bedrock Editions",
+  "description": "Minecraft Bot — Java & Bedrock, Microsoft Auth free, Web Dashboard",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "start:java": "cross-env SERVER_TYPE=java node bot.js",
-    "start:bedrock": "cross-env SERVER_TYPE=bedrock node bot.js",
     "dev": "nodemon bot.js"
   },
-  "keywords": [
-    "minecraft",
-    "bot",
-    "mineflayer",
-    "bedrock",
-    "java-edition"
-  ],
-  "author": "trind2013e5-png",
-  "license": "MIT",
   "dependencies": {
-    "mineflayer": "^4.14.1",
-    "mineflayer-pathfinder": "^2.4.4",
-    "mineflayer-movements": "^2.10.4",
-    "minecraft-bedrock-js": "^0.7.0",
-    "dotenv": "^16.0.3",
-    "cross-env": "^7.0.3",
-    "vec3": "^0.1.7"
+    "mineflayer": "^4.22.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "bedrock-protocol": "^3.42.0",
+    "prismarine-auth": "^2.4.0",
+    "chalk": "^4.1.2",
+    "express": "^4.18.2",
+    "ws": "^8.16.0"
   },
   "devDependencies": {
-    "nodemon": "^2.0.20"
+    "nodemon": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
